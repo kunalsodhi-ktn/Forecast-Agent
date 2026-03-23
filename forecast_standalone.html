@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Forecast Agent</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f9f9f8; color: #1a1a1a; min-height: 100vh; }
+  #root { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+  input[type=number] { appearance: none; -moz-appearance: textfield; }
+  input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 20px; color: #1a1a1a; }
+  table { border-collapse: collapse; width: 100%; }
+  ::-webkit-scrollbar { height: 6px; } ::-webkit-scrollbar-track { background: #f1f0ea; } ::-webkit-scrollbar-thumb { background: #c0beb5; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const COUNTRIES = ["US","CA","UK"];
+const COUNTRY_COLORS = { US: "#378ADD", CA: "#1D9E75", UK: "#D85A30" };
+
+const fmt = (n, dec=0) => isNaN(n)||!isFinite(n) ? "—" : n.toLocaleString("en-US",{minimumFractionDigits:dec,maximumFractionDigits:dec});
+const pct = (n, dec=1) => isNaN(n)||!isFinite(n) ? "—" : n.toFixed(dec)+"%";
+const cur = (n) => isNaN(n)||!isFinite(n) ? "—" : "$"+fmt(Math.round(n));
+
+const styles = {
+  card: { background:"#fff", border:"0.5px solid #e0dfd7", borderRadius:12, padding:"14px 16px" },
+  metricCard: { background:"#f3f2ec", borderRadius:8, padding:"12px 14px", minWidth:0 },
+  input: { width:"100%", fontSize:13, padding:"6px 10px", borderRadius:6, border:"0.5px solid #c8c7be", background:"#fff", color:"#1a1a1a", outline:"none" },
+  tabBtn: (active) => ({ padding:"6px 16px", fontSize:13, borderRadius:6, border:`0.5px solid ${active?"#888":"#ddd"}`, background:active?"#f0efea":"transparent", color:"#1a1a1a", cursor:"pointer", fontWeight:active?500:400 }),
+  filterBtn: (active, color) => ({ padding:"4px 10px", fontSize:12, borderRadius:5, border:`0.5px solid ${active?(color||"#888"):"#ddd"}`, background:active?"#f0efea":"transparent", color:active?(color||"#1a1a1a"):"#888", cursor:"pointer", fontWeight:active?500:400 }),
+};
+
+function StatCard({ label, value, sub, color }) {
+  return (
+    <div style={styles.metricCard}>
+      <div style={{fontSize:12,color:"#888",marginBottom:4}}>{label}</div>
+      <div style={{fontSize:20,fontWeight:500,color:color||"#1a1a1a"}}>{value}</div>
+      {sub && <div style={{fontSize:11,color:"#999",marginTop:2}}>{sub}</div>}
+    </div>
+  );
+}
+
+function Section({ title, children, defaultOpen=true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div style={{marginBottom:16}}>
+      <div onClick={()=>setOpen(!open)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #e0dfd7"}}>
+        <span style={{fontSize:13,fontWeight:500}}>{title}</span>
+        <span style={{fontSize:11,color:"#999",marginLeft:"auto"}}>{open?"▲":"▼"}</span>
+      </div>
+      {open && <div style={{paddingTop:12}}>{children}</div>}
+    </div>
+  );
+}
+
+function InputRow({ label, hint, children }) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"180px 1fr",alignItems:"center",gap:12,marginBottom:10}}>
+      <label style={{fontSize:13,color:"#555"}}>
+        {label}
+        {hint && <span style={{fontSize:11,display:"block",color:"#aaa"}}>{hint}</span>}
+      </label>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function App() {
+  const [tab, setTab] = useState("inputs");
+  const [viewCountry, setViewCountry] = useState("ALL");
+  const [viewMonth, setViewMonth] = useState("ALL");
+
+  const [grossSales, setGrossSales] = useState(5000000);
+  const [returnRate, setReturnRate] = useState(8);
+  const [newCustRate, setNewCustRate] = useState(40);
+  const [convRate, setConvRate] = useState(2.5);
+  const [paidSessPct, setPaidSessPct] = useState(60);
+  const [mediaspend, setMediaspend] = useState(400000);
+  const [aov, setAov] = useState(85);
+  const [monthly, setMonthly] = useState([6,5,7,7,8,7,8,9,10,12,14,7]);
+  const [countryAlloc, setCountryAlloc] = useState({US:60,CA:20,UK:20});
+
+  const totalWeight = monthly.reduce((a,b)=>a+b,0);
+  const allocTotal = Object.values(countryAlloc).reduce((a,b)=>a+b,0);
+
+  const updateCountry = (c, val) => {
+    const v = Math.max(0, Math.min(100, Number(val)||0));
+    setCountryAlloc(prev => ({...prev,[c]:v}));
+  };
+
+  const data = useMemo(() => {
+    const results = {};
+    COUNTRIES.forEach(c => {
+      const cShare = (countryAlloc[c]||0)/100;
+      const cGross = grossSales * cShare;
+      const months = {};
+      MONTHS.forEach((m,i) => {
+        const mShare = monthly[i]/totalWeight;
+        const mGross = cGross * mShare;
+        const mNet = mGross * (1 - returnRate/100);
+        const mOrders = aov > 0 ? mGross / aov : 0;
+        const mSessions = convRate > 0 ? (mOrders / (convRate/100)) : 0;
+        const mSpend = mediaspend * cShare * mShare;
+        months[m] = {
+          gross:mGross, net:mNet, shipping:mGross*0.02,
+          orders:mOrders, newOrders:mOrders*(newCustRate/100), repeatOrders:mOrders*(1-newCustRate/100),
+          sessions:mSessions, paidSess:mSessions*(paidSessPct/100), orgSess:mSessions*(1-paidSessPct/100),
+          spend:mSpend, mer:mSpend>0?mGross/mSpend:0, growthMer:mSpend>0?mNet/mSpend:0,
+        };
+      });
+      results[c] = months;
+    });
+    return results;
+  }, [grossSales,returnRate,newCustRate,convRate,paidSessPct,mediaspend,aov,monthly,countryAlloc,totalWeight]);
+
+  const agg = (countries, months) => {
+    const cs = countries === "ALL" ? COUNTRIES : [countries];
+    const ms = months === "ALL" ? MONTHS : [months];
+    const sum = k => cs.flatMap(c => ms.map(m => data[c]?.[m]?.[k]||0)).reduce((a,b)=>a+b,0);
+    const gross = sum("gross"), orders = sum("orders"), spend = sum("spend"), net = sum("net");
+    return {
+      gross, net, shipping:gross*0.02, orders,
+      newOrders:sum("newOrders"), repeatOrders:sum("repeatOrders"),
+      sessions:sum("sessions"), paidSess:sum("paidSess"), orgSess:sum("orgSess"),
+      spend, mer:spend>0?gross/spend:0, growthMer:spend>0?net/spend:0,
+      aov:orders>0?gross/orders:0, convRate:sum("sessions")>0?(orders/sum("sessions"))*100:0,
+    };
+  };
+
+  const summary = agg(viewCountry, viewMonth);
+
+  return (
+    <div>
+      <h1>Forecast Agent</h1>
+      <div style={{display:"flex",gap:8,marginBottom:20}}>
+        {["inputs","summary","monthly"].map(t => (
+          <button key={t} style={styles.tabBtn(tab===t)} onClick={()=>setTab(t)}>
+            {t.charAt(0).toUpperCase()+t.slice(1).replace("monthly","Monthly breakdown")}
+          </button>
+        ))}
+      </div>
+
+      {/* INPUTS */}
+      {tab==="inputs" && (
+        <div style={styles.card}>
+          <Section title="Annual revenue assumptions">
+            <InputRow label="Gross sales" hint="Annual total">
+              <input style={styles.input} type="number" value={grossSales} onChange={e=>setGrossSales(Number(e.target.value))} />
+            </InputRow>
+            <InputRow label="Gross AOV ($)">
+              <input style={styles.input} type="number" value={aov} onChange={e=>setAov(Number(e.target.value))} />
+            </InputRow>
+            <InputRow label="Return rate (%)" hint="Net = gross × (1 − return rate)">
+              <input style={styles.input} type="number" value={returnRate} min={0} max={100} onChange={e=>setReturnRate(Number(e.target.value))} />
+            </InputRow>
+          </Section>
+          <Section title="Customer & traffic">
+            <InputRow label="New customer rate (%)" hint="% of orders from new customers">
+              <input style={styles.input} type="number" value={newCustRate} min={0} max={100} onChange={e=>setNewCustRate(Number(e.target.value))} />
+            </InputRow>
+            <InputRow label="Conversion rate (%)" hint="Orders ÷ sessions">
+              <input style={styles.input} type="number" value={convRate} min={0} step={0.1} onChange={e=>setConvRate(Number(e.target.value))} />
+            </InputRow>
+            <InputRow label="Paid sessions (%)" hint="% of total sessions that are paid">
+              <input style={styles.input} type="number" value={paidSessPct} min={0} max={100} onChange={e=>setPaidSessPct(Number(e.target.value))} />
+            </InputRow>
+          </Section>
+          <Section title="Media & efficiency">
+            <InputRow label="Annual media spend ($)">
+              <input style={styles.input} type="number" value={mediaspend} onChange={e=>setMediaspend(Number(e.target.value))} />
+            </InputRow>
+          </Section>
+          <Section title="Country allocation">
+            <div style={{fontSize:12,color:allocTotal===100?"#1D9E75":"#D85A30",marginBottom:10}}>
+              Total: {allocTotal}% {allocTotal!==100 && "— must equal 100%"}
+            </div>
+            {COUNTRIES.map(c => (
+              <InputRow key={c} label={c}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input style={{...styles.input,width:80}} type="number" value={countryAlloc[c]} min={0} max={100} onChange={e=>updateCountry(c,e.target.value)} />
+                  <span style={{fontSize:12,color:"#999"}}>% = {cur(grossSales*(countryAlloc[c]||0)/100)}</span>
+                </div>
+              </InputRow>
+            ))}
+          </Section>
+          <Section title="Monthly seasonality weights" defaultOpen={false}>
+            <div style={{fontSize:12,color:"#999",marginBottom:10}}>Relative weights — higher = more revenue that month</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+              {MONTHS.map((m,i) => (
+                <div key={m} style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:12,color:"#888",width:28}}>{m}</span>
+                  <input style={{...styles.input,width:60,padding:"4px 6px"}} type="number" value={monthly[i]} min={1}
+                    onChange={e=>{const v=[...monthly];v[i]=Math.max(1,Number(e.target.value)||1);setMonthly(v);}} />
+                </div>
+              ))}
+            </div>
+          </Section>
+        </div>
+      )}
+
+      {/* SUMMARY */}
+      {tab==="summary" && (
+        <div style={styles.card}>
+          <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+            <button style={styles.filterBtn(viewCountry==="ALL")} onClick={()=>setViewCountry("ALL")}>All countries</button>
+            {COUNTRIES.map(c=><button key={c} style={styles.filterBtn(viewCountry===c,COUNTRY_COLORS[c])} onClick={()=>setViewCountry(c)}>{c}</button>)}
+            <div style={{width:1,background:"#e0dfd7",margin:"0 4px"}} />
+            <button style={styles.filterBtn(viewMonth==="ALL")} onClick={()=>setViewMonth("ALL")}>Full year</button>
+            {MONTHS.map(m=><button key={m} style={styles.filterBtn(viewMonth===m)} onClick={()=>setViewMonth(m)}>{m}</button>)}
+          </div>
+          <div style={{fontSize:12,color:"#999",marginBottom:12}}>
+            {viewCountry==="ALL"?"All countries":viewCountry} · {viewMonth==="ALL"?"Full year":viewMonth}
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Revenue</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Gross sales" value={cur(summary.gross)} />
+            <StatCard label="Net sales" value={cur(summary.net)} sub={`after ${returnRate}% returns`} />
+            <StatCard label="Shipping rev" value={cur(summary.shipping)} sub="2% of gross" />
+            <StatCard label="Gross AOV" value={cur(summary.aov)} />
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Orders</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Total orders" value={fmt(Math.round(summary.orders))} />
+            <StatCard label="New customers" value={fmt(Math.round(summary.newOrders))} sub={`${newCustRate}% of orders`} />
+            <StatCard label="Repeat customers" value={fmt(Math.round(summary.repeatOrders))} sub={`${100-newCustRate}% of orders`} />
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Web metrics</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Total sessions" value={fmt(Math.round(summary.sessions))} />
+            <StatCard label="Paid sessions" value={fmt(Math.round(summary.paidSess))} sub={`${paidSessPct}%`} />
+            <StatCard label="Organic sessions" value={fmt(Math.round(summary.orgSess))} sub={`${100-paidSessPct}%`} />
+            <StatCard label="Conversion rate" value={pct(summary.convRate)} />
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Media efficiency</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10}}>
+            <StatCard label="Media spend" value={cur(summary.spend)} />
+            <StatCard label="MER (gross)" value={summary.mer.toFixed(2)+"x"} sub="Gross rev ÷ spend" color="#1D9E75" />
+            <StatCard label="Growth MER" value={summary.growthMer.toFixed(2)+"x"} sub="Net rev ÷ spend" color="#378ADD" />
+          </div>
+        </div>
+      )}
+
+      {/* MONTHLY */}
+      {tab==="monthly" && (
+        <div style={styles.card}>
+          <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+            <button style={styles.filterBtn(viewCountry==="ALL")} onClick={()=>setViewCountry("ALL")}>All countries</button>
+            {COUNTRIES.map(c=><button key={c} style={styles.filterBtn(viewCountry===c,COUNTRY_COLORS[c])} onClick={()=>setViewCountry(c)}>{c}</button>)}
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table>
+              <thead>
+                <tr style={{borderBottom:"0.5px solid #e0dfd7"}}>
+                  {["Month","Gross","Net","Shipping","Orders","New","Repeat","Sessions","Paid","Organic","Conv%","Spend","MER","Growth MER"].map(h=>(
+                    <th key={h} style={{padding:"6px 8px",textAlign:"right",fontWeight:500,fontSize:12,color:"#888",whiteSpace:"nowrap"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {MONTHS.map((m,i)=>{
+                  const r = agg(viewCountry, m);
+                  return (
+                    <tr key={m} style={{borderBottom:"0.5px solid #f0efe8",background:i%2===0?"transparent":"#fafaf7"}}>
+                      <td style={{padding:"6px 8px",fontWeight:500,fontSize:12}}>{m}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{cur(r.gross)}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{cur(r.net)}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{cur(r.shipping)}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.orders))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.newOrders))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.repeatOrders))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.sessions))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.paidSess))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.orgSess))}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{pct(r.convRate)}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12}}>{cur(r.spend)}</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12,color:"#1D9E75",fontWeight:500}}>{r.mer.toFixed(2)}x</td>
+                      <td style={{padding:"6px 8px",textAlign:"right",fontSize:12,color:"#378ADD",fontWeight:500}}>{r.growthMer.toFixed(2)}x</td>
+                    </tr>
+                  );
+                })}
+                {(()=>{
+                  const r = agg(viewCountry,"ALL");
+                  return (
+                    <tr style={{borderTop:"1px solid #c8c7be",fontWeight:500}}>
+                      <td style={{padding:"8px 8px",fontSize:12}}>Total</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{cur(r.gross)}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{cur(r.net)}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{cur(r.shipping)}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.orders))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.newOrders))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.repeatOrders))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.sessions))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.paidSess))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{fmt(Math.round(r.orgSess))}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{pct(r.convRate)}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12}}>{cur(r.spend)}</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12,color:"#1D9E75"}}>{r.mer.toFixed(2)}x</td>
+                      <td style={{padding:"8px 8px",textAlign:"right",fontSize:12,color:"#378ADD"}}>{r.growthMer.toFixed(2)}x</td>
+                    </tr>
+                  );
+                })()}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
