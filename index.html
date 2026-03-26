@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Forecast Agent</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f9f9f8;color:#1a1a1a;min-height:100vh}
+#root{max-width:1100px;margin:0 auto;padding:24px 16px}
+input[type=number]{-moz-appearance:textfield}
+input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none}
+::-webkit-scrollbar{height:5px;width:5px}::-webkit-scrollbar-track{background:#f0efe8}::-webkit-scrollbar-thumb{background:#c0beb5;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useMemo,useRef,useCallback}=React;
+const MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const COUNTRIES=["US","CA","UK"];
+const CC={US:"#378ADD",CA:"#1D9E75",UK:"#D85A30"};
+const NOW=new Date();
+const CUR_YEAR=NOW.getFullYear();
+const CUR_MONTH_IDX=NOW.getMonth(); // 0-based
+
+const num=v=>parseFloat(String(v||"").replace(/[$,%\s]/g,""))||0;
+const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0;
+const fmt=(n,d=0)=>isNaN(n)||!isFinite(n)?"—":n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const cur=n=>isNaN(n)||!isFinite(n)?"—":"$"+fmt(Math.round(n));
+const pct=(n,d=1)=>isNaN(n)||!isFinite(n)?"—":n.toFixed(d)+"%";
+const xfmt=(n,d=2)=>isNaN(n)||!isFinite(n)?"—":n.toFixed(d)+"x";
+
+// Default baseline (fallback if no CSV)
+const DEF={Jan:{rr:8,cr:2.3,mer:3.2,aov:85,wt:6},Feb:{rr:7.5,cr:2.1,mer:3.0,aov:85,wt:5},Mar:{rr:7.8,cr:2.4,mer:3.3,aov:85,wt:7},Apr:{rr:7.5,cr:2.3,mer:3.1,aov:85,wt:7},May:{rr:7.2,cr:2.5,mer:3.4,aov:85,wt:8},Jun:{rr:7.0,cr:2.4,mer:3.2,aov:85,wt:7},Jul:{rr:7.5,cr:2.3,mer:3.0,aov:85,wt:8},Aug:{rr:7.8,cr:2.4,mer:3.1,aov:85,wt:9},Sep:{rr:8.0,cr:2.5,mer:3.3,aov:85,wt:10},Oct:{rr:8.5,cr:2.6,mer:3.5,aov:85,wt:12},Nov:{rr:9.0,cr:3.2,mer:4.0,aov:85,wt:14},Dec:{rr:9.5,cr:2.8,mer:3.8,aov:85,wt:7}};
+
+const initMonthly=()=>{const r={};MONTHS.forEach(m=>{r[m]={...DEF[m]}});return r;};
+
+// Styles
+const S={
+  card:{background:"#fff",border:"0.5px solid #e0dfd7",borderRadius:12,padding:"16px 18px"},
+  mc:{background:"#f3f2ec",borderRadius:8,padding:"12px 14px",minWidth:0},
+  inp:{width:"100%",fontSize:13,padding:"5px 8px",borderRadius:6,border:"0.5px solid #c8c7be",background:"#fff",color:"#1a1a1a",outline:"none"},
+  tab:(a)=>({padding:"6px 16px",fontSize:13,borderRadius:6,border:`0.5px solid ${a?"#888":"#ddd"}`,background:a?"#f0efea":"transparent",color:"#1a1a1a",cursor:"pointer",fontWeight:a?500:400}),
+  flt:(a,c)=>({padding:"4px 10px",fontSize:12,borderRadius:5,border:`0.5px solid ${a?(c||"#888"):"#ddd"}`,background:a?"#f0efea":"transparent",color:a?(c||"#1a1a1a"):"#888",cursor:"pointer",fontWeight:a?500:400}),
+  th:{padding:"6px 8px",textAlign:"right",fontWeight:500,fontSize:12,color:"#888",whiteSpace:"nowrap"},
+  td:{padding:"6px 8px",textAlign:"right",fontSize:12},
+};
+
+function Badge({label,color}){return <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:color+"22",color,fontWeight:500}}>{label}</span>}
+function StatCard({label,value,sub,color}){return(<div style={S.mc}><div style={{fontSize:12,color:"#888",marginBottom:4}}>{label}</div><div style={{fontSize:20,fontWeight:500,color:color||"#1a1a1a"}}>{value}</div>{sub&&<div style={{fontSize:11,color:"#999",marginTop:2}}>{sub}</div>}</div>)}
+function Sec({title,children,open:initOpen=true,badge}){const[o,setO]=useState(initOpen);return(<div style={{marginBottom:16}}><div onClick={()=>setO(!o)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"0.5px solid #e0dfd7"}}><span style={{fontSize:13,fontWeight:500}}>{title}</span>{badge&&<Badge label={badge} color="#378ADD"/>}<span style={{fontSize:11,color:"#999",marginLeft:"auto"}}>{o?"▲":"▼"}</span></div>{o&&<div style={{paddingTop:12}}>{children}</div>}</div>)}
+function IRow({label,hint,children}){return(<div style={{display:"grid",gridTemplateColumns:"190px 1fr",alignItems:"center",gap:12,marginBottom:10}}><label style={{fontSize:13,color:"#555"}}>{label}{hint&&<span style={{fontSize:11,display:"block",color:"#aaa"}}>{hint}</span>}</label><div>{children}</div></div>)}
+
+function App(){
+  const[tab,setTab]=useState("forecast");
+  const[csvStatus,setCsvStatus]=useState(null);
+  const[forecastYear,setForecastYear]=useState(CUR_YEAR+1);
+  const[targetGross,setTargetGross]=useState(6000000);
+  const[newCustRate,setNewCustRate]=useState(40);
+  const[paidSessPct,setPaidSessPct]=useState(60);
+  const[mediaspend,setMediaspend]=useState(500000);
+  const[countryAlloc,setCountryAlloc]=useState({US:60,CA:20,UK:20});
+  // baseline monthly rates (from CSV averages)
+  const[baseline,setBaseline]=useState(initMonthly);
+  // per-month overrides for forecast (keyed by month name)
+  const[overrides,setOverrides]=useState({});
+  // actuals from CSV keyed by "YYYY-Mon"
+  const[actuals,setActuals]=useState({});
+  const[reforecastMonth,setReforecastMonth]=useState(MONTHS[CUR_MONTH_IDX]);
+  const fileRef=useRef();
+  const allocTotal=Object.values(countryAlloc).reduce((a,b)=>a+b,0);
+
+  // Effective rates for a forecast month = override if set, else baseline
+  const effRate=(m,key)=>overrides[m]?.[key]??baseline[m]?.[key]??DEF[m]?.[key]??0;
+  const totalWt=MONTHS.reduce((s,m)=>s+(effRate(m,"wt")||0),0);
+
+  // Is a given year-month an "actual" (locked)?
+  const isActual=(yr,m)=>{
+    const key=`${yr}-${m}`;
+    return !!actuals[key];
+  };
+  const getActual=(yr,m)=>actuals[`${yr}-${m}`]||null;
+
+  // CSV parser
+  const handleCSV=useCallback((file)=>{
+    if(!file)return;
+    Papa.parse(file,{header:true,skipEmptyLines:true,complete:(res)=>{
+      const rows=res.data;
+      const nc=(s)=>s?.trim().toLowerCase().replace(/[\s\-]/g,"_");
+      const gcol=(row,keys)=>{const nr={};Object.keys(row).forEach(k=>{nr[nc(k)]=row[k]});for(const k of keys)if(nr[k]!==undefined)return nr[k];return undefined};
+
+      // Group by month for baseline averaging
+      const byM={};MONTHS.forEach(m=>{byM[m]={rr:[],cr:[],gs:[],ms:[],ord:[],sess:[],aov:[],wt:[],nc:[],rc:[]}});
+      const newActuals={};
+
+      rows.forEach(row=>{
+        const mRaw=gcol(row,["month"]);
+        const yRaw=gcol(row,["year"]);
+        if(!mRaw)return;
+        const m=MONTHS.find(x=>mRaw.trim().toLowerCase().startsWith(x.toLowerCase()));
+        if(!m)return;
+        const yr=parseInt(yRaw)||null;
+        const b=byM[m];
+        const rrv=num(gcol(row,["return_rate","returnrate"]));
+        const crv=num(gcol(row,["conversion_rate","conv_rate","convrate"]));
+        const gsv=num(gcol(row,["gross_sales","grosssales"]));
+        const msv=num(gcol(row,["media_spend","mediaspend","spend"]));
+        const ordv=num(gcol(row,["orders","total_orders"]));
+        const sessv=num(gcol(row,["sessions","total_sessions"]));
+        const aovv=num(gcol(row,["gross_aov","aov"]));
+        const wtv=num(gcol(row,["weight_month","weight_month","weightmonth","weight"]));
+        const ncv=num(gcol(row,["new_customers","newcustomers"]));
+        const rcv=num(gcol(row,["repeat_customers","repeatcustomers"]));
+
+        if(rrv>0)b.rr.push(rrv);
+        if(crv>0)b.cr.push(crv);
+        if(gsv>0)b.gs.push(gsv);
+        if(msv>0)b.ms.push(msv);
+        if(ordv>0)b.ord.push(ordv);
+        if(sessv>0)b.sess.push(sessv);
+        if(aovv>0)b.aov.push(aovv);
+        if(wtv>0)b.wt.push(wtv);
+        if(ncv>0)b.nc.push(ncv);
+        if(rcv>0)b.rc.push(rcv);
+
+        // Store as actual if year provided
+        if(yr){
+          const key=`${yr}-${m}`;
+          const miIdx=MONTHS.indexOf(m);
+          // lock if year is past, or year is current and month has passed
+          const isPast=(yr<CUR_YEAR)||( yr===CUR_YEAR && miIdx<CUR_MONTH_IDX);
+          if(isPast&&gsv>0){
+            newActuals[key]={
+              gross:gsv,net:num(gcol(row,["net_sales","netsales"]))||gsv*(1-rrv/100),
+              orders:ordv,newOrders:ncv,repeatOrders:rcv,
+              sessions:sessv,spend:msv,
+              returnRate:rrv,convRate:crv,aov:aovv||( ordv>0?gsv/ordv:0),
+              mer:msv>0?gsv/msv:0,growthMer:msv>0?(gsv*(1-rrv/100))/msv:0,
+              paidSess:sessv*(paidSessPct/100),orgSess:sessv*(1-paidSessPct/100),
+              shipping:gsv*0.02,isActual:true,
+            };
+          }
+        }
+      });
+
+      // Build baseline from averages
+      const nb={};
+      let totalGsAnn=0,totalMsAnn=0,ncRates=[];
+      MONTHS.forEach(m=>{
+        const b=byM[m];
+        const gsA=avg(b.gs),msA=avg(b.ms),ordA=avg(b.ord);
+        totalGsAnn+=gsA;totalMsAnn+=msA;
+        if(b.nc.length&&ordA>0)ncRates.push((avg(b.nc)/ordA)*100);
+        nb[m]={
+          rr:b.rr.length?avg(b.rr):DEF[m].rr,
+          cr:b.cr.length?avg(b.cr):DEF[m].cr,
+          mer:gsA>0&&msA>0?gsA/msA:DEF[m].mer,
+          aov:b.aov.length?avg(b.aov):(ordA>0&&gsA>0?gsA/ordA:DEF[m].aov),
+          wt:b.wt.length?avg(b.wt):DEF[m].wt,
+        };
+      });
+
+      setBaseline(nb);
+      setOverrides({});
+      setActuals(newActuals);
+      if(totalGsAnn>0)setTargetGross(Math.round(totalGsAnn*1.1)); // suggest 10% growth
+      if(totalMsAnn>0)setMediaspend(Math.round(totalMsAnn*1.1));
+      if(ncRates.length)setNewCustRate(Math.round(avg(ncRates)));
+      setCsvStatus(`✓ ${rows.length} rows loaded · ${Object.keys(newActuals).length} actuals locked · baseline rates updated`);
+    },error:()=>setCsvStatus("✗ Parse error — check CSV format")});
+  },[paidSessPct]);
+
+  // Compute one month's forecast row
+  const calcMonth=(m)=>{
+    const wt=effRate(m,"wt");
+    const mShare=totalWt>0?wt/totalWt:0;
+    const gross=targetGross*mShare;
+    const rr=effRate(m,"rr");
+    const cr=effRate(m,"cr");
+    const aovVal=effRate(m,"aov");
+    const net=gross*(1-rr/100);
+    const orders=aovVal>0?gross/aovVal:0;
+    const sessions=cr>0?(orders/(cr/100)):0;
+    const spend=mediaspend*mShare;
+    return{
+      gross,net,shipping:gross*0.02,orders,
+      newOrders:orders*(newCustRate/100),repeatOrders:orders*(1-newCustRate/100),
+      sessions,paidSess:sessions*(paidSessPct/100),orgSess:sessions*(1-paidSessPct/100),
+      spend,mer:spend>0?gross/spend:0,growthMer:spend>0?net/spend:0,
+      aov:aovVal,returnRate:rr,convRate:cr,isActual:false,
+    };
+  };
+
+  // For a given month, return actual if locked else forecast
+  const getRow=(m)=>{
+    const key=`${forecastYear}-${m}`;
+    if(actuals[key])return actuals[key];
+    return calcMonth(m);
+  };
+
+  const sumRows=(months)=>{
+    const rows=months.map(m=>getRow(m));
+    const s=k=>rows.reduce((a,r)=>a+(r[k]||0),0);
+    const gross=s("gross"),orders=s("orders"),spend=s("spend"),net=s("net"),sess=s("sessions");
+    return{gross,net,shipping:s("shipping"),orders,newOrders:s("newOrders"),repeatOrders:s("repeatOrders"),sessions:sess,paidSess:s("paidSess"),orgSess:s("orgSess"),spend,mer:spend>0?gross/spend:0,growthMer:spend>0?net/spend:0,aov:orders>0?gross/orders:0,convRate:sess>0?(orders/sess)*100:0};
+  };
+
+  const annual=sumRows(MONTHS);
+  const actualsCount=MONTHS.filter(m=>actuals[`${forecastYear}-${m}`]).length;
+  const forecastCount=12-actualsCount;
+
+  const updOvr=(m,k,v)=>setOverrides(p=>({...p,[m]:{...(p[m]||{}),rr:effRate(m,"rr"),cr:effRate(m,"cr"),mer:effRate(m,"mer"),aov:effRate(m,"aov"),wt:effRate(m,"wt"),...(p[m]||{}),[k]:parseFloat(v)||0}}));
+
+  const tinp={...S.inp,width:72,padding:"4px 6px",textAlign:"right"};
+
+  return(
+    <div>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:12}}>
+        <div>
+          <h1 style={{fontSize:20,fontWeight:500,marginBottom:4}}>Forecast Agent</h1>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:12,color:"#999"}}>Forecast year:</span>
+            <input style={{...S.inp,width:80,fontSize:13}} type="number" value={forecastYear} onChange={e=>setForecastYear(parseInt(e.target.value)||CUR_YEAR+1)}/>
+            {actualsCount>0&&<Badge label={`${actualsCount} actuals locked`} color="#1D9E75"/>}
+            {forecastCount>0&&<Badge label={`${forecastCount} months projected`} color="#378ADD"/>}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          {csvStatus&&<span style={{fontSize:12,color:csvStatus.startsWith("✓")?"#1D9E75":"#D85A30",maxWidth:340}}>{csvStatus}</span>}
+          <input ref={fileRef} type="file" accept=".csv" style={{display:"none"}} onChange={e=>handleCSV(e.target.files[0])}/>
+          <button onClick={()=>fileRef.current.click()} style={{padding:"7px 14px",fontSize:13,borderRadius:6,border:"0.5px solid #c8c7be",background:"#fff",cursor:"pointer",fontWeight:500}}>↑ Import CSV</button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
+        {[["forecast","Annual forecast"],["reforecast","Monthly reforecast"],["settings","Settings"],["baseline","Baseline rates"]].map(([id,l])=>(
+          <button key={id} style={S.tab(tab===id)} onClick={()=>setTab(id)}>{l}</button>
+        ))}
+      </div>
+
+      {/* ── ANNUAL FORECAST ── */}
+      {tab==="forecast"&&(
+        <div>
+          <div style={{...S.card,marginBottom:16}}>
+            <div style={{display:"flex",gap:16,alignItems:"flex-end",flexWrap:"wrap",marginBottom:16}}>
+              <div>
+                <div style={{fontSize:12,color:"#888",marginBottom:4}}>Target gross sales ({forecastYear})</div>
+                <input style={{...S.inp,width:160,fontSize:16,fontWeight:500}} type="number" value={targetGross} onChange={e=>setTargetGross(Number(e.target.value))}/>
+              </div>
+              <div>
+                <div style={{fontSize:12,color:"#888",marginBottom:4}}>Annual media spend</div>
+                <input style={{...S.inp,width:140,fontSize:14}} type="number" value={mediaspend} onChange={e=>setMediaspend(Number(e.target.value))}/>
+              </div>
+            </div>
+            <div style={{fontSize:12,color:"#aaa"}}>Distributed across months using historical seasonality weights. Past months show actuals from your CSV.</div>
+          </div>
+
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Revenue</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Gross sales" value={cur(annual.gross)}/>
+            <StatCard label="Net sales" value={cur(annual.net)}/>
+            <StatCard label="Shipping rev" value={cur(annual.shipping)} sub="2% of gross"/>
+            <StatCard label="Gross AOV" value={cur(annual.aov)}/>
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Orders</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Total orders" value={fmt(Math.round(annual.orders))}/>
+            <StatCard label="New customers" value={fmt(Math.round(annual.newOrders))} sub={`${newCustRate}% rate`}/>
+            <StatCard label="Repeat customers" value={fmt(Math.round(annual.repeatOrders))}/>
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Web</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+            <StatCard label="Total sessions" value={fmt(Math.round(annual.sessions))}/>
+            <StatCard label="Paid sessions" value={fmt(Math.round(annual.paidSess))} sub={`${paidSessPct}%`}/>
+            <StatCard label="Organic sessions" value={fmt(Math.round(annual.orgSess))}/>
+            <StatCard label="Conversion rate" value={pct(annual.convRate)}/>
+          </div>
+          <div style={{fontSize:13,fontWeight:500,color:"#888",marginBottom:8}}>Media efficiency</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10,marginBottom:24}}>
+            <StatCard label="Media spend" value={cur(annual.spend)}/>
+            <StatCard label="MER (gross)" value={xfmt(annual.mer)} sub="Gross ÷ spend" color="#1D9E75"/>
+            <StatCard label="Growth MER" value={xfmt(annual.growthMer)} sub="Net ÷ spend" color="#378ADD"/>
+          </div>
+
+          {/* Monthly table */}
+          <div style={{...S.card}}>
+            <div style={{fontSize:13,fontWeight:500,marginBottom:12}}>Month by month</div>
+            <div style={{overflowX:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead>
+                  <tr style={{borderBottom:"0.5px solid #e0dfd7"}}>
+                    {["","Month","Gross","Net","Shipping","AOV","Orders","New","Repeat","Sessions","Paid","Organic","Conv%","Ret%","Spend","MER","Growth MER"].map((h,i)=>(
+                      <th key={i} style={{...S.th,textAlign:i<=1?"left":"right"}}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {MONTHS.map((m,i)=>{
+                    const r=getRow(m);
+                    const locked=r.isActual;
+                    const bg=i%2===0?"transparent":"#fafaf7";
+                    return(
+                      <tr key={m} style={{borderBottom:"0.5px solid #f0efe8",background:bg}}>
+                        <td style={{padding:"6px 6px",textAlign:"center"}}>{locked?<span style={{fontSize:10,padding:"2px 5px",borderRadius:3,background:"#1D9E7522",color:"#1D9E75",fontWeight:500}}>A</span>:<span style={{fontSize:10,padding:"2px 5px",borderRadius:3,background:"#378ADD22",color:"#378ADD",fontWeight:500}}>F</span>}</td>
+                        <td style={{padding:"6px 8px",fontWeight:500,fontSize:12}}>{m}</td>
+                        <td style={S.td}>{cur(r.gross)}</td>
+                        <td style={S.td}>{cur(r.net)}</td>
+                        <td style={S.td}>{cur(r.shipping)}</td>
+                        <td style={S.td}>{cur(r.aov)}</td>
+                        <td style={S.td}>{fmt(Math.round(r.orders))}</td>
+                        <td style={S.td}>{fmt(Math.round(r.newOrders))}</td>
+                        <td style={S.td}>{fmt(Math.round(r.repeatOrders))}</td>
+                        <td style={S.td}>{fmt(Math.round(r.sessions))}</td>
+                        <td style={S.td}>{fmt(Math.round(r.paidSess))}</td>
+                        <td style={S.td}>{fmt(Math.round(r.orgSess))}</td>
+                        <td style={S.td}>{pct(r.convRate)}</td>
+                        <td style={S.td}>{pct(r.returnRate)}</td>
+                        <td style={S.td}>{cur(r.spend)}</td>
+                        <td style={{...S.td,color:"#1D9E75",fontWeight:500}}>{xfmt(r.mer)}</td>
+                        <td style={{...S.td,color:"#378ADD",fontWeight:500}}>{xfmt(r.growthMer)}</td>
+                      </tr>
+                    );
+                  })}
+                  {(()=>{const r=annual;return(
+                    <tr style={{borderTop:"1px solid #c8c7be",fontWeight:500,background:"#f9f9f6"}}>
+                      <td style={{padding:"8px 6px"}}></td>
+                      <td style={{padding:"8px 8px",fontSize:12}}>Total</td>
+                      <td style={S.td}>{cur(r.gross)}</td><td style={S.td}>{cur(r.net)}</td><td style={S.td}>{cur(r.shipping)}</td><td style={S.td}>{cur(r.aov)}</td>
+                      <td style={S.td}>{fmt(Math.round(r.orders))}</td><td style={S.td}>{fmt(Math.round(r.newOrders))}</td><td style={S.td}>{fmt(Math.round(r.repeatOrders))}</td>
+                      <td style={S.td}>{fmt(Math.round(r.sessions))}</td><td style={S.td}>{fmt(Math.round(r.paidSess))}</td><td style={S.td}>{fmt(Math.round(r.orgSess))}</td>
+                      <td style={S.td}>{pct(r.convRate)}</td><td style={S.td}>—</td><td style={S.td}>{cur(r.spend)}</td>
+                      <td style={{...S.td,color:"#1D9E75",fontWeight:500}}>{xfmt(r.mer)}</td><td style={{...S.td,color:"#378ADD",fontWeight:500}}>{xfmt(r.growthMer)}</td>
+                    </tr>
+                  )})()}
+                </tbody>
+              </table>
+            </div>
+            <div style={{marginTop:10,fontSize:11,color:"#bbb"}}><span style={{background:"#1D9E7522",color:"#1D9E75",padding:"1px 5px",borderRadius:3,fontWeight:500,fontSize:10}}>A</span> = Actual from CSV &nbsp;&nbsp; <span style={{background:"#378ADD22",color:"#378ADD",padding:"1px 5px",borderRadius:3,fontWeight:500,fontSize:10}}>F</span> = Forecast</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MONTHLY REFORECAST ── */}
+      {tab==="reforecast"&&(
+        <div>
+          <div style={{...S.card,marginBottom:16}}>
+            <div style={{fontSize:13,color:"#666",marginBottom:14}}>Override rates for any future month. Actuals are locked and cannot be edited here.</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {MONTHS.map(m=>{
+                const locked=!!actuals[`${forecastYear}-${m}`];
+                return(
+                  <button key={m} onClick={()=>!locked&&setReforecastMonth(m)}
+                    style={{...S.flt(reforecastMonth===m&&!locked, "#378ADD"),opacity:locked?0.45:1,cursor:locked?"not-allowed":"pointer",position:"relative"}}>
+                    {m}{locked&&<span style={{fontSize:9,marginLeft:4,color:"#1D9E75"}}>A</span>}
+                    {overrides[m]&&!locked&&<span style={{fontSize:9,marginLeft:4,color:"#D85A30"}}>*</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {(()=>{
+            const m=reforecastMonth;
+            const locked=!!actuals[`${forecastYear}-${m}`];
+            if(locked)return<div style={{...S.card,color:"#888",fontSize:13}}>This month is locked to actuals from your CSV and cannot be edited.</div>;
+            const r=calcMonth(m);
+            return(
+              <div style={S.card}>
+                <div style={{fontSize:14,fontWeight:500,marginBottom:16}}>{m} {forecastYear} — reforecast</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                  <div>
+                    <div style={{fontSize:12,color:"#888",marginBottom:12}}>Adjust rates (baseline from CSV)</div>
+                    {[["Return rate %","rr",0.1],["Conv rate %","cr",0.1],["AOV ($)","aov",1],["Seasonality wt","wt",1]].map(([l,k,step])=>(
+                      <IRow key={k} label={l}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <input style={{...S.inp,width:80}} type="number" step={step} value={effRate(m,k)} onChange={e=>updOvr(m,k,e.target.value)}/>
+                          {overrides[m]?.[k]!==undefined&&<span style={{fontSize:11,color:"#D85A30"}}>overridden</span>}
+                        </div>
+                      </IRow>
+                    ))}
+                    {overrides[m]&&<button onClick={()=>setOverrides(p=>{const n={...p};delete n[m];return n;})} style={{fontSize:12,color:"#D85A30",background:"none",border:"none",cursor:"pointer",padding:0,marginTop:4}}>↺ Reset to baseline</button>}
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,color:"#888",marginBottom:12}}>Projected output</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                      <StatCard label="Gross" value={cur(r.gross)}/>
+                      <StatCard label="Net" value={cur(r.net)}/>
+                      <StatCard label="Orders" value={fmt(Math.round(r.orders))}/>
+                      <StatCard label="AOV" value={cur(r.aov)}/>
+                      <StatCard label="Sessions" value={fmt(Math.round(r.sessions))}/>
+                      <StatCard label="Conv rate" value={pct(r.convRate)}/>
+                      <StatCard label="MER" value={xfmt(r.mer)} color="#1D9E75"/>
+                      <StatCard label="Growth MER" value={xfmt(r.growthMer)} color="#378ADD"/>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── SETTINGS ── */}
+      {tab==="settings"&&(
+        <div style={S.card}>
+          <Sec title="Customer & traffic">
+            <IRow label="New customer rate (%)" hint="% of orders from new customers"><input style={S.inp} type="number" value={newCustRate} min={0} max={100} onChange={e=>setNewCustRate(Number(e.target.value))}/></IRow>
+            <IRow label="Paid sessions (%)" hint="% of total sessions that are paid"><input style={S.inp} type="number" value={paidSessPct} min={0} max={100} onChange={e=>setPaidSessPct(Number(e.target.value))}/></IRow>
+          </Sec>
+          <Sec title="Country allocation">
+            <div style={{fontSize:12,color:allocTotal===100?"#1D9E75":"#D85A30",marginBottom:10}}>Total: {allocTotal}% {allocTotal!==100&&"— must equal 100%"}</div>
+            {COUNTRIES.map(c=>(
+              <IRow key={c} label={c}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input style={{...S.inp,width:80}} type="number" value={countryAlloc[c]} min={0} max={100} onChange={e=>setCountryAlloc(p=>({...p,[c]:Math.max(0,Math.min(100,Number(e.target.value)||0))}))}/>
+                  <span style={{fontSize:12,color:"#999"}}>% = {cur(targetGross*(countryAlloc[c]||0)/100)}</span>
+                </div>
+              </IRow>
+            ))}
+          </Sec>
+        </div>
+      )}
+
+      {/* ── BASELINE RATES ── */}
+      {tab==="baseline"&&(
+        <div style={S.card}>
+          <div style={{fontSize:13,color:"#666",marginBottom:16}}>Historical averages from your CSV. These are the default rates used for all forecast months unless overridden in Monthly reforecast.</div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead>
+                <tr style={{borderBottom:"0.5px solid #e0dfd7"}}>
+                  {["Month","Return rate %","Conv rate %","MER","AOV ($)","Seasonality wt"].map((h,i)=>(
+                    <th key={h} style={{...S.th,textAlign:i===0?"left":"right"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {MONTHS.map((m,i)=>(
+                  <tr key={m} style={{borderBottom:"0.5px solid #f0efe8",background:i%2===0?"transparent":"#fafaf7"}}>
+                    <td style={{padding:"6px 8px",fontWeight:500,fontSize:13}}>{m}</td>
+                    {[["rr",1],["cr",2],["mer",2],["aov",0],["wt",1]].map(([k,d])=>(
+                      <td key={k} style={S.td}>
+                        <input style={tinp} type="number" step={d===0?1:0.1} value={parseFloat((baseline[m]?.[k]||0).toFixed(d))} onChange={e=>setBaseline(p=>({...p,[m]:{...p[m],[k]:parseFloat(e.target.value)||0}}))}/>
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{marginTop:12,fontSize:11,color:"#aaa"}}>Editing here updates the baseline for all forecast months. Use Monthly reforecast to override specific months only.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
